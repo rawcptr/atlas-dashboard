@@ -1,5 +1,5 @@
 [project]
-name = "atlas-dashboard"
+name = "atlas"
 version = "0.1.0"
 description = "connects to the atlas dashboard and provides metrics"
 readme = "README.md"
