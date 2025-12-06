@@ -10,31 +10,47 @@ class AtlasClient:
         self.url = url
         self.ws = None
         self.queue = asyncio.Queue()
-        self.task = None
-        self.closed = False
+        self.running = True
+        self.sender_task = None
 
     async def connect(self):
+        print(f"[DEBUG] Connecting to {self.url}...")
         self.ws = await connect(self.url)
-        self.task = asyncio.create_task(self._sender())
+        print("[DEBUG] Connected!")
+        self.sender_task = asyncio.create_task(self._sender())
+
+        if self.sender_task.done():
+            try:
+                self.sender_task.result()
+            except Exception as e:
+                print(f"[ERROR] Task exception: {e}")
 
     async def _send(self, msg: dict):
-        if self.closed:
-            return
         await self.queue.put(msg)
+        await asyncio.sleep(0)
 
     async def _sender(self):
-        while not self.closed:
+        while self.running:
             msg = await self.queue.get()
             try:
                 if self.ws is not None:
                     await self.ws.send(json.dumps(msg))
-            except Exception:
-                await asyncio.sleep(1.0)
-                self.ws = await connect(self.url)
+            except Exception as e1:
+                print(f"[ERROR] Send failed: {e1}")
+                await asyncio.sleep(0.5)
+                try:
+                    self.ws = await connect(self.url)
+                    print("[DEBUG] Reconnected successfully")
+                except Exception as e2:
+                    print(f"[ERROR] Reconnect failed: {e2}")
+                    continue
+                await self.ws.send(json.dumps(msg))
 
     async def close(self):
-        self.closed = True
-        if self.ws is not None:
+        self.running = False
+        if self.sender_task:
+            self.sender_task.cancel()
+        if self.ws:
             await self.ws.close()
 
 
@@ -85,13 +101,18 @@ async def update_dynamic(
         **extra,
     }
     data = {k: v for k, v in data.items() if v is not None}
+    try:
+        await _c()._send(
+            {
+                "type": "dynamic_metrics",
+                "data": data,
+            }
+        )
+    except Exception as e:
+        print(f"[ERROR] update_dynamic failed: {e}")
+        import traceback
 
-    await _c()._send(
-        {
-            "type": "dynamic_metrics",
-            "data": data,
-        }
-    )
+        traceback.print_exc()
 
 
 async def update_gpu(
@@ -114,7 +135,6 @@ async def update_gpu(
         **extra,
     }
     data = {k: v for k, v in data.items() if v is not None}
-
     await _c()._send(
         {
             "type": "gpu_metrics",
@@ -141,10 +161,8 @@ async def update_layer(
         "grad_norm": grad_norm,
     }
     data = {k: v for k, v in data.items() if v is not None}
-
     if not data:
         return
-
     await _c()._send(
         {
             "type": "layer_metrics",
