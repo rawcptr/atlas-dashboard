@@ -63,6 +63,7 @@ class Atlas:
         self._ema_throughput = None
         self._ema_step_time = None
         self._metric_cache = {}
+        self._transport.queue_message({"type": "reset"})
         logger.debug("Atlas state reset.")
 
     def compute(
