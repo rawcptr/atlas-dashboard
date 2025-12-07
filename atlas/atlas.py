@@ -1,3 +1,4 @@
+import os
 import time
 import logging
 import threading
@@ -55,6 +56,14 @@ class Atlas:
         return {AutoMetric.THROUGHPUT, AutoMetric.STEP_TIME, AutoMetric.MFU}
 
     # Public API
+    def reset(self) -> None:
+        """Reset internal state (call this when starting a new training run)."""
+        self._last_step = None
+        self._last_time = None
+        self._ema_throughput = None
+        self._ema_step_time = None
+        self._metric_cache = {}
+        logger.debug("Atlas state reset.")
 
     def compute(
         self,
@@ -95,6 +104,7 @@ class Atlas:
         self,
         *,
         step: int,
+        loss: Optional[float] = None,
         samples: Optional[int] = None,
         **metrics: float,
     ) -> None:
@@ -103,6 +113,8 @@ class Atlas:
         Auto-metrics (throughput, step_time, MFU) are computed based on
         deltas from the previous call and automatically included.
         """
+        if loss is not None:
+            metrics["loss"] = loss
         auto_metrics = self._calculate_auto_metrics(step=step, samples=samples)
         manual_metrics = self._evaluate_manual_metrics()
         all_metrics = {**metrics, **auto_metrics, **manual_metrics}
@@ -186,7 +198,8 @@ class Atlas:
         return None
 
     def _compute_throughput(
-        self, out: dict[str, float], eff_samples: Optional[int], dt: float) -> None:
+        self, out: dict[str, float], eff_samples: Optional[int], dt: float
+    ) -> None:
         """Computes and updates the EMA throughput."""
         if AutoMetric.THROUGHPUT in self._auto_enabled and eff_samples is not None:
             inst_tput = float(eff_samples) / dt
@@ -259,7 +272,7 @@ class Atlas:
     def _start_gpu_monitoring(self) -> None:
         """Starts the GPU monitoring thread."""
         self._stop_event.clear()
-        self.gpu_thread = threading.Thread(target=self._gpu_monitor_loop, daemon=True) # Changed to daemon=True
+        self.gpu_thread = threading.Thread(target=self._gpu_monitor_loop, daemon=True)
         self.gpu_thread.start()
 
     def _stop_gpu_monitoring(self) -> None:
@@ -322,6 +335,25 @@ class Atlas:
             self._transport.queue_message(msg)
 
 
+def _load_env_config() -> dict[str, Any]:
+    """Load configuration from environment variables."""
+    config = {}
+
+    if gpu_interval := os.environ.get("ATLAS_GPU_INTERVAL"):
+        config["gpu_interval"] = float(gpu_interval)
+
+    if batch_size := os.environ.get("ATLAS_BATCH_SIZE"):
+        config["batch_size"] = int(batch_size)
+
+    if max_flops := os.environ.get("ATLAS_GPU_MAX_FLOPS"):
+        config["max_flops"] = float(max_flops)
+
+    if ema_alpha := os.environ.get("ATLAS_EMA_ALPHA"):
+        config["ema_alpha"] = float(ema_alpha)
+
+    return config
+
+
 @contextmanager
 def session(
     uri: str,
@@ -334,15 +366,16 @@ def session(
     auto_metrics: Optional[Collection[AutoMetric]] = None,
     ema_alpha: float = 0.2,
 ):
+    env_config = _load_env_config()
     tracker = Atlas(
         uri,
-        gpu_interval,
-        batch_size=batch_size,
-        max_flops=max_flops,
+        gpu_interval=gpu_interval or env_config.get("gpu_interval"),
+        batch_size=batch_size or env_config.get("batch_size"),
+        max_flops=max_flops or env_config.get("max_flops"),
         flops_per_sample=flops_per_sample,
         flops_fn=flops_fn,
         auto_metrics=auto_metrics,
-        ema_alpha=ema_alpha,
+        ema_alpha=ema_alpha or env_config.get("ema_alpha", 0.2),
     )
     with tracker:
         yield tracker
